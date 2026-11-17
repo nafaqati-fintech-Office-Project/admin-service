@@ -50,6 +50,7 @@ class AdminApiTest {
         registry.add("admin.downstream.user-service-url", () -> base);
         registry.add("admin.downstream.billing-service-url", () -> base);
         registry.add("admin.downstream.family-service-url", () -> base);
+        registry.add("admin.downstream.transaction-service-url", () -> base);
         registry.add("admin.health-targets", () -> "stub=" + base + ",gone=http://127.0.0.1:1");
     }
 
@@ -71,7 +72,7 @@ class AdminApiTest {
             server.createContext("/internal/admin/stats", ex -> {
                 boolean fromAdmin = "admin-service".equals(ex.getRequestHeaders().getFirst("X-Internal-Service"))
                         && "test-internal-token-0123456789".equals(ex.getRequestHeaders().getFirst("X-Internal-Token"));
-                reply(ex, fromAdmin ? 200 : 403, "{\"total\":120,\"families\":8,\"last30\":30,\"previous30\":20,"
+                reply(ex, fromAdmin ? 200 : 403, "{\"total\":120,\"families\":8,\"activeAccounts30d\":40,\"activeAccountsPrevious30d\":50,\"last30\":30,\"previous30\":20,"
                         + "\"signupsByDay\":[{\"date\":\"" + today + "\",\"count\":4}],"
                         + "\"activeSubscriptions\":15,\"pastDue\":1,\"churn30d\":2.5,\"failedPayments7d\":3,"
                         + "\"byInterval\":[{\"label\":\"MONTHLY\",\"count\":10},{\"label\":\"YEARLY\",\"count\":5}],"
@@ -127,7 +128,8 @@ class AdminApiTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.totals.users").value(120))
                 .andExpect(jsonPath("$.totals.premium").value(15))
-                .andExpect(jsonPath("$.totals.activeUsers30d").doesNotExist())
+                .andExpect(jsonPath("$.totals.activeUsers30d").value(40))
+                .andExpect(jsonPath("$.deltas.activeUsers30d").value(-20.0))
                 .andExpect(jsonPath("$.totals.families").value(8))
                 .andExpect(jsonPath("$.deltas.families").value(50.0))
                 .andExpect(jsonPath("$.deltas.users").value(50.0))

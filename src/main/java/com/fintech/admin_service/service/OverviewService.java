@@ -33,19 +33,21 @@ public class OverviewService {
         Map<String, Object> userStats = attempt("user-service", downstream::userStats);
         Map<String, Object> billing = attempt("billing-service", downstream::billingStats);
         Map<String, Object> family = attempt("family-service", downstream::familyStats);
+        Map<String, Object> activity = attempt("transaction-service", downstream::transactionStats);
 
         Long users = number(userStats, "total");
         Long premium = number(billing, "activeSubscriptions");
 
         Map<String, Object> totals = new LinkedHashMap<>();
         totals.put("users", users);
-        totals.put("activeUsers30d", null);   // needs login activity from auth-service: not connected yet
+        // "active" = recorded at least one transaction in the last 30 days (login activity lives in auth-service, not connected)
+        totals.put("activeUsers30d", number(activity, "activeAccounts30d"));
         totals.put("premium", premium);
         totals.put("families", number(family, "families"));
 
         Map<String, Object> deltas = new LinkedHashMap<>();
         deltas.put("users", userStats == null ? null : percentChange(number(userStats, "last30"), number(userStats, "previous30")));
-        deltas.put("activeUsers30d", null);
+        deltas.put("activeUsers30d", activity == null ? null : percentChange(number(activity, "activeAccounts30d"), number(activity, "activeAccountsPrevious30d")));
         deltas.put("premium", null);
         deltas.put("families", family == null ? null : percentChange(number(family, "last30"), number(family, "previous30")));
 
@@ -63,7 +65,7 @@ public class OverviewService {
         out.put("planBreakdown", plans);
         out.put("platformBreakdown", List.of());
         out.put("featureAdoption", List.of());
-        out.put("sources", Map.of("users", userStats != null, "billing", billing != null, "families", family != null));
+        out.put("sources", Map.of("users", userStats != null, "billing", billing != null, "families", family != null, "activity", activity != null));
         return out;
     }
 
