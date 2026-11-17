@@ -32,6 +32,7 @@ public class OverviewService {
     public Map<String, Object> overview() {
         Map<String, Object> userStats = attempt("user-service", downstream::userStats);
         Map<String, Object> billing = attempt("billing-service", downstream::billingStats);
+        Map<String, Object> family = attempt("family-service", downstream::familyStats);
 
         Long users = number(userStats, "total");
         Long premium = number(billing, "activeSubscriptions");
@@ -40,13 +41,13 @@ public class OverviewService {
         totals.put("users", users);
         totals.put("activeUsers30d", null);   // needs login activity from auth-service: not connected yet
         totals.put("premium", premium);
-        totals.put("families", null);         // needs family-service: not connected yet
+        totals.put("families", number(family, "families"));
 
         Map<String, Object> deltas = new LinkedHashMap<>();
         deltas.put("users", userStats == null ? null : percentChange(number(userStats, "last30"), number(userStats, "previous30")));
         deltas.put("activeUsers30d", null);
         deltas.put("premium", null);
-        deltas.put("families", null);
+        deltas.put("families", family == null ? null : percentChange(number(family, "last30"), number(family, "previous30")));
 
         List<Map<String, Object>> plans = new ArrayList<>();
         if (users != null && premium != null) {
@@ -62,7 +63,7 @@ public class OverviewService {
         out.put("planBreakdown", plans);
         out.put("platformBreakdown", List.of());
         out.put("featureAdoption", List.of());
-        out.put("sources", Map.of("users", userStats != null, "billing", billing != null));
+        out.put("sources", Map.of("users", userStats != null, "billing", billing != null, "families", family != null));
         return out;
     }
 

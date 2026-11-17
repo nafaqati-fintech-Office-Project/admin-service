@@ -28,6 +28,7 @@ public class Downstream {
 
     private final RestClient users;
     private final RestClient billing;
+    private final RestClient families;
     private final RestClient usersApi;
 
     public Downstream(AdminProperties properties, @Value("${internal.api-token:}") String sharedToken,
@@ -38,6 +39,7 @@ public class Downstream {
         String token = ownSecret != null && !ownSecret.isBlank() ? ownSecret : sharedToken == null ? "" : sharedToken;
         this.users = internalClient(properties.downstream().userServiceUrl(), factory, token);
         this.billing = internalClient(properties.downstream().billingServiceUrl(), factory, token);
+        this.families = internalClient(properties.downstream().familyServiceUrl(), factory, token);
         this.usersApi = RestClient.builder().baseUrl(properties.downstream().userServiceUrl()).requestFactory(factory).build();
     }
 
@@ -60,6 +62,10 @@ public class Downstream {
 
     public List<Map<String, Object>> deletionRequests() {
         return users.get().uri("/internal/admin/deletion-requests").retrieve().body(LIST);
+    }
+
+    public Map<String, Object> familyStats() {
+        return families.get().uri("/internal/admin/stats").retrieve().body(MAP);
     }
 
     public Map<String, Object> billingStats() {

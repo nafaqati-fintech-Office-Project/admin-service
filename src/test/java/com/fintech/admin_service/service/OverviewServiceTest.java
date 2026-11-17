@@ -28,9 +28,9 @@ class OverviewServiceTest {
     @Test
     void anUnreachableSourceGivesNullsNotInventedNumbers() {
         var props = new AdminProperties(new AdminProperties.Downstream("http://127.0.0.1:1", "http://127.0.0.1:1",
-                Duration.ofMillis(300)), "");
+                "http://127.0.0.1:1", Duration.ofMillis(300)), "");
         var overview = new OverviewService(new Downstream(props, "t", "")).overview();
-        assertThat(overview).containsEntry("sources", Map.of("users", false, "billing", false));
+        assertThat(overview).containsEntry("sources", Map.of("users", false, "billing", false, "families", false));
         assertThat(((Map<?, ?>) overview.get("totals")).get("users")).isNull();
         assertThat((List<?>) overview.get("signups")).isEmpty();
     }
