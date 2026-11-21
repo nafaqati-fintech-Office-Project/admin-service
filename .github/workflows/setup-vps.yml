@@ -134,6 +134,8 @@ jobs:
           echo "== admin-service warnings (last 30 min)"
           docker logs --since 30m fintech-admin-service-1 2>&1 | grep -E "WARN|ERROR" | cut -c1-220 | tail -15
           REMOTE
+
+      - name: Give the ADMIN role
         if: inputs.mode == 'make-admin'
         env:
           ADMIN_USER: ${{ inputs.admin_username }}
