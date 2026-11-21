@@ -1,0 +1,116 @@
+name: Set up VPS for the admin panel
+
+# Run by hand (Actions → "Set up VPS for the admin panel" → Run workflow). Uses the same VPS secrets as the deploy workflows.
+#   inspect  read only: memory, containers, and how compose.apps.yaml / .env look for admin-service, the gateway and CORS
+#   setup    ops/vps/setup-admin-service.sh <panel_origin> (database, Dockerfile, compose block, gateway settings; backs up,
+#            validates, rolls back on error), then builds and starts admin-service with /opt/fintech/deploy.sh, then
+#            (if restart_gateway) recreates the api-gateway so it reads ADMIN_SERVICE_URI and the new CORS origin (~40 s pause)
+#   make-admin  give the ADMIN role to admin_username (an account that already exists)
+# Safe to run again: every step is skipped when already done.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: inspect, setup or make-admin
+        type: choice
+        options: [inspect, setup, make-admin]
+        default: inspect
+      panel_origin:
+        description: The admin panel's address (https://..., no trailing slash)
+        default: https://nafaqati-admin.vercel.app
+      restart_gateway:
+        description: "setup: restart the api-gateway at the end (short API pause)"
+        type: boolean
+        default: true
+      admin_username:
+        description: "make-admin: username to give the ADMIN role"
+        default: ""
+
+concurrency: { group: deploy-vps-admin-service, cancel-in-progress: false }
+
+jobs:
+  vps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      VPS: ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}
+      COMPOSE: docker compose -f /opt/fintech/compose.yaml -f /opt/fintech/compose.apps.yaml
+    steps:
+      - uses: actions/checkout@v4
+      - name: SSH setup
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          for i in 1 2 3 4 5; do ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null && break; sleep 5; done
+          test -s ~/.ssh/known_hosts
+
+      - name: Inspect (read only)
+        run: |
+          ssh "$VPS" bash -s <<'REMOTE'
+          set -u
+          cd /opt/fintech
+          echo "== memory"; free -m
+          echo "== containers"; docker ps --format '{{.Names}}  {{.Status}}' | sort
+          echo "== admin-service in compose.apps.yaml"; grep -nE '^  admin-service:' compose.apps.yaml || echo "(not defined)"
+          echo "== api-gateway settings"; awk '$0=="  api-gateway:"{g=1;next} g&&/^  [a-zA-Z0-9_-]+:[[:space:]]*$/{g=0} g' compose.apps.yaml | grep -E 'ADMIN_SERVICE_URI|CORS_ALLOWED_ORIGINS|environment:' || echo "(no match)"
+          echo "== CORS origins in .env"; grep -E '^CORS_ALLOWED_ORIGINS=' .env || echo "(none in .env)"
+          echo "== billing-service keys (names only)"; awk '$0=="  billing-service:"{g=1;next} g&&/^  [a-zA-Z0-9_-]+:[[:space:]]*$/{g=0} g' compose.apps.yaml | grep -oE '^[[:space:]]+[A-Z_]+:' | tr -d ' :' | tr '\n' ' '; echo
+          echo "== per-caller secrets used?"; grep -c 'INTERNAL_CALLER_SECRET' compose.apps.yaml || true
+          echo "== admin_db"; $(echo docker compose -f compose.yaml -f compose.apps.yaml) exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d postgres -tAc "SELECT datname FROM pg_database WHERE datname = '"'"'admin_db'"'"'"' || true
+          echo "== deploy.sh start check"; grep -c 'grep -E "Started' deploy.sh
+          REMOTE
+
+      - name: Prepare the server (setup-admin-service.sh)
+        if: inputs.mode == 'setup'
+        env:
+          ORIGIN: ${{ inputs.panel_origin }}
+        run: |
+          [[ "$ORIGIN" =~ ^https://[a-zA-Z0-9.-]+$ ]] || { echo "panel_origin must look like https://name.vercel.app"; exit 1; }
+          scp ops/vps/setup-admin-service.sh ops/vps/make-admin.sh "$VPS:/opt/fintech/"
+          ssh "$VPS" "chmod 700 /opt/fintech/setup-admin-service.sh /opt/fintech/make-admin.sh && bash /opt/fintech/setup-admin-service.sh '$ORIGIN'"
+
+      - name: Build and start admin-service (deploy.sh)
+        if: inputs.mode == 'setup'
+        run: git archive --format=tar.gz HEAD | ssh "$VPS" /opt/fintech/deploy.sh admin-service
+
+      - name: Restart the api-gateway (reads ADMIN_SERVICE_URI and CORS)
+        if: inputs.mode == 'setup' && inputs.restart_gateway
+        run: |
+          ssh "$VPS" bash -s <<'REMOTE'
+          set -euo pipefail
+          cd /opt/fintech
+          C="docker compose -f compose.yaml -f compose.apps.yaml"
+          $C up -d --no-deps --force-recreate api-gateway
+          for i in $(seq 1 36); do
+            sleep 5
+            if docker logs fintech-api-gateway-1 2>&1 | grep -E "Started .*Application" >/dev/null; then echo "api-gateway is up after $((i*5))s"; exit 0; fi
+          done
+          echo "api-gateway did not report Started in 180 s:"; docker logs --tail 40 fintech-api-gateway-1; exit 1
+          REMOTE
+
+      - name: Give the ADMIN role
+        if: inputs.mode == 'make-admin'
+        env:
+          ADMIN_USER: ${{ inputs.admin_username }}
+        run: |
+          [[ "$ADMIN_USER" =~ ^[A-Za-z0-9._-]{3,50}$ ]] || { echo "admin_username is required (3-50 letters, digits, . _ -)"; exit 1; }
+          scp ops/vps/make-admin.sh "$VPS:/opt/fintech/"
+          ssh "$VPS" "bash /opt/fintech/make-admin.sh '$ADMIN_USER'"
+
+      - name: Check from outside
+        if: inputs.mode == 'setup'
+        env:
+          ORIGIN: ${{ inputs.panel_origin }}
+        run: |
+          sleep 10
+          admin=$(curl -s -o /dev/null -w '%{http_code}' https://api.tgdplanet.cloud/api/admin/capabilities)
+          cors=$(curl -s -o /dev/null -w '%{http_code}' -X OPTIONS https://api.tgdplanet.cloud/api/auth/login \
+                   -H "Origin: $ORIGIN" -H 'Access-Control-Request-Method: POST' -H 'Access-Control-Request-Headers: content-type')
+          echo "admin route without sign-in: $admin (expect 401)"
+          echo "CORS preflight from $ORIGIN: $cors (expect 200)"
+          [ "$admin" = 401 ] || exit 1
+          if [ "${{ inputs.restart_gateway }}" = "true" ]; then [ "$cors" = 200 ] || exit 1; fi
