@@ -9,8 +9,8 @@ class PropertiesTest {
 
     @Test
     void healthTargetsParse() {
-        var props = new AdminProperties(new AdminProperties.Downstream("u", "b", "f", "t", Duration.ofSeconds(1)),
-                "a=http://x:1, b=http://y:2,,bad");
+        var props = new AdminProperties(new AdminProperties.Downstream("u", "b", "f", "t", "a", "n", Duration.ofSeconds(1)),
+                "a=http://x:1, b=http://y:2,,bad", "localhost:9092");
         assertThat(props.healthTargetMap()).containsEntry("a", "http://x:1").containsEntry("b", "http://y:2").hasSize(2);
     }
 }

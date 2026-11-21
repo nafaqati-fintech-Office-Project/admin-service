@@ -1,6 +1,7 @@
 package com.fintech.admin_service.api;
 
 import com.fintech.admin_service.config.AdminProperties;
+import com.fintech.admin_service.service.KafkaLag;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -13,15 +14,17 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.client.RestClient;
 
-/** Service health: each service's own /actuator/health, probed in parallel with a short timeout. */
+/** Service health (each service's own /actuator/health, probed in parallel with a short timeout) and Kafka consumer lag. */
 @RestController
 @RequestMapping("/api/admin/system")
 public class SystemController {
 
     private final Map<String, String> targets;
     private final RestClient probe;
+    private final KafkaLag kafkaLag;
 
-    public SystemController(AdminProperties properties) {
+    public SystemController(AdminProperties properties, KafkaLag kafkaLag) {
+        this.kafkaLag = kafkaLag;
         this.targets = properties.healthTargetMap();
         var factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(java.time.Duration.ofMillis(800));
@@ -39,10 +42,10 @@ public class SystemController {
         return out;
     }
 
-    /** Consumer lag is not exposed by any service yet; see GET /capabilities. */
+    /** Consumer lag per group and topic (read-only AdminClient). */
     @GetMapping("/kafka")
     public List<Map<String, Object>> kafka() {
-        return List.of();
+        return kafkaLag.lag();
     }
 
     private Map<String, Object> check(String name, String baseUrl) {

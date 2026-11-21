@@ -6,9 +6,10 @@ import java.util.Map;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 @ConfigurationProperties("admin")
-public record AdminProperties(Downstream downstream, String healthTargets) {
+public record AdminProperties(Downstream downstream, String healthTargets, String kafkaBootstrapServers) {
 
-    public record Downstream(String userServiceUrl, String billingServiceUrl, String familyServiceUrl, String transactionServiceUrl, Duration timeout) {
+    public record Downstream(String userServiceUrl, String billingServiceUrl, String familyServiceUrl, String transactionServiceUrl,
+                             String authServiceUrl, String notificationServiceUrl, Duration timeout) {
     }
 
     /** "name=url, name=url" as a name to base URL map, in declaration order. */

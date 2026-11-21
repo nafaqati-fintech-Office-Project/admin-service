@@ -37,6 +37,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 class AdminApiTest {
 
     private static final String ADMIN = UUID.randomUUID().toString();
+    static volatile String LAST_AUTH_ACTION;
 
     @Container
     @ServiceConnection
@@ -51,6 +52,9 @@ class AdminApiTest {
         registry.add("admin.downstream.billing-service-url", () -> base);
         registry.add("admin.downstream.family-service-url", () -> base);
         registry.add("admin.downstream.transaction-service-url", () -> base);
+        registry.add("admin.downstream.auth-service-url", () -> base);
+        registry.add("admin.downstream.notification-service-url", () -> base);
+        registry.add("admin.kafka-bootstrap-servers", () -> "");
         registry.add("admin.health-targets", () -> "stub=" + base + ",gone=http://127.0.0.1:1");
     }
 
@@ -81,6 +85,26 @@ class AdminApiTest {
             server.createContext("/internal/admin/users", ex -> reply(ex, 200,
                     "{\"items\":[{\"id\":\"11111111-2222-3333-4444-555555555555\",\"status\":\"ACTIVE\",\"createdAt\":\"2026-01-01T00:00:00Z\","
                             + "\"email\":\"leak@example.com\",\"firstName\":\"Leak\"}],\"total\":1}"));
+            // auth-service actions and lookup: need the admin's bearer token
+            server.createContext("/internal/admin/users/", ex -> {
+                LAST_AUTH_ACTION = ex.getRequestURI().getPath();
+                reply(ex, ex.getRequestHeaders().getFirst("Authorization") != null ? 200 : 401, "{}");
+            });
+            server.createContext("/internal/admin/accounts/lookup", ex -> reply(ex, 200,
+                    "[{\"id\":\"11111111-2222-3333-4444-555555555555\",\"suspended\":true,\"authProvider\":\"GOOGLE\",\"admin\":false,"
+                            + "\"emailMasked\":\"k***@e***.com\",\"username\":\"leaky\"}]"));
+            // exact support lookup: only this address is known
+            server.createContext("/internal/admin/accounts/resolve", ex -> {
+                String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+                boolean known = body.contains("known.person@example.com");
+                reply(ex, known ? 200 : 404, known ? "{\"id\":\"11111111-2222-3333-4444-555555555555\",\"matchedBy\":\"EMAIL\"}" : "{}");
+            });
+            server.createContext("/internal/admin/memberships/lookup", ex -> reply(ex, 200,
+                    "[{\"id\":\"11111111-2222-3333-4444-555555555555\",\"plan\":\"PREMIUM\",\"status\":\"ACTIVE\","
+                            + "\"cancelAtPeriodEnd\":false,\"periodEnd\":\"2027-01-01T00:00:00Z\",\"amount\":499}]"));
+            server.createContext("/internal/admin/memberships/", ex -> reply(ex, 409, "{}"));   // no active subscription
+            server.createContext("/api/admin/users/", ex -> reply(ex, 200,
+                    "{\"id\":\"r1\",\"status\":\"REQUESTED\",\"userId\":\"leak\"}"));
             server.createContext("/internal/admin/deletion-requests", ex -> reply(ex, 200,
                     "[{\"id\":\"a1\",\"userRef\":\"11111111\",\"status\":\"REQUESTED\"}]"));
             server.createContext("/api/admin/deletion-requests", ex -> {
@@ -154,10 +178,23 @@ class AdminApiTest {
         // the stub deliberately leaks an e-mail and a name; the service must still return only id, status and date
         String body = mvc.perform(asAdmin(get("/api/admin/users")))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$[0].id").value("11111111-2222-3333-4444-555555555555"))
+                .andExpect(jsonPath("$.items[0].id").value("11111111-2222-3333-4444-555555555555"))
+                .andExpect(jsonPath("$.items[0].suspended").isEmpty())   // no bearer token: auth-service state is unknown, not guessed
                 .andReturn().getResponse().getContentAsString();
         assertThat(body).contains("\"status\":\"ACTIVE\"").doesNotContain("leak@example.com").doesNotContain("Leak")
-                .doesNotContain("email").doesNotContain("firstName");
+                .doesNotContain("\"email\"").doesNotContain("firstName");   // a raw e-mail field: emailMasked is allowed
+    }
+
+    @Test
+    void accountListJoinsAuthAndBillingStateButNothingElse() throws Exception {
+        String body = mvc.perform(asAdmin(get("/api/admin/users")).header("Authorization", "Bearer abc"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items[0].suspended").value(true))
+                .andExpect(jsonPath("$.items[0].authProvider").value("GOOGLE"))
+                .andExpect(jsonPath("$.items[0].plan").value("PREMIUM"))
+                .andExpect(jsonPath("$.sources.auth").value(true))
+                .andReturn().getResponse().getContentAsString();
+        assertThat(body).doesNotContain("leaky").doesNotContain("499").doesNotContain("username").doesNotContain("amount");
     }
 
     // ---- actions and audit ----
@@ -198,10 +235,93 @@ class AdminApiTest {
     }
 
     @Test
-    void accountStatusAndForceLogoutAreHonestlyNotSupportedYet() throws Exception {
-        mvc.perform(asAdmin(post("/api/admin/users/" + UUID.randomUUID() + "/status")).contentType(MediaType.APPLICATION_JSON)
-                .content("{\"status\":\"SUSPENDED\"}")).andExpect(status().isNotImplemented());
-        mvc.perform(asAdmin(get("/api/admin/capabilities"))).andExpect(jsonPath("$.accountStatus").value(false));
+    void lookupByExactEmailOpensOneAccountWithAMaskedEmailAndIsAuditedWithoutTheAddress() throws Exception {
+        String body = mvc.perform(asAdmin(post("/api/admin/users/lookup")).header("Authorization", "Bearer abc")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"identifier\":\"known.person@example.com\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value("11111111-2222-3333-4444-555555555555"))
+                .andExpect(jsonPath("$.emailMasked").value("k***@e***.com"))
+                .andReturn().getResponse().getContentAsString();
+        assertThat(body).doesNotContain("known.person").doesNotContain("leaky");
+        mvc.perform(asAdmin(post("/api/admin/users/lookup")).header("Authorization", "Bearer abc")
+                .contentType(MediaType.APPLICATION_JSON).content("{\"identifier\":\"stranger@example.com\"}"))
+                .andExpect(status().isNotFound());
+        for (String bad : new String[] {"k%", "*@example.com", "ab", "two words@example.com"}) {
+            mvc.perform(asAdmin(post("/api/admin/users/lookup")).header("Authorization", "Bearer abc")
+                    .contentType(MediaType.APPLICATION_JSON).content("{\"identifier\":\"" + bad + "\"}"))
+                    .andExpect(status().isBadRequest());
+        }
+        assertThat(jdbc.queryForObject("select count(*) from audit_log where action = 'ACCOUNT_LOOKUP'", Long.class))
+                .isGreaterThanOrEqualTo(6L);
+        assertThat(jdbc.queryForObject("select count(*) from audit_log where action = 'ACCOUNT_LOOKUP' and "
+                + "(coalesce(detail, '') like '%example.com%' or coalesce(target, '') like '%example.com%')", Long.class)).isZero();
+    }
+
+    @Test
+    void suspendingIsDoneByAuthServiceAsTheAdminAndAudited() throws Exception {
+        UUID user = UUID.randomUUID();
+        mvc.perform(asAdmin(post("/api/admin/users/" + user + "/status")).header("Authorization", "Bearer abc")
+                .contentType(MediaType.APPLICATION_JSON).content("{\"status\":\"SUSPENDED\"}")).andExpect(status().isOk());
+        assertThat(LAST_AUTH_ACTION).isEqualTo("/internal/admin/users/" + user + "/suspend");
+        assertThat(jdbc.queryForObject("select count(*) from audit_log where action = 'ACCOUNT_SUSPEND' and target = ? "
+                + "and outcome = 'SUCCESS'", Long.class, user.toString())).isEqualTo(1L);
+        mvc.perform(asAdmin(post("/api/admin/users/" + user + "/force-logout")).header("Authorization", "Bearer abc"))
+                .andExpect(status().isOk());
+        assertThat(LAST_AUTH_ACTION).endsWith("/force-logout");
+        mvc.perform(asAdmin(post("/api/admin/users/" + user + "/status")).header("Authorization", "Bearer abc")
+                .contentType(MediaType.APPLICATION_JSON).content("{\"status\":\"BANNED\"}")).andExpect(status().isBadRequest());
+        mvc.perform(asAdmin(get("/api/admin/capabilities"))).andExpect(jsonPath("$.accountStatus").value(true));
+    }
+
+    @Test
+    void anAdminCannotSuspendDeleteOrUpgradeTheirOwnAccount() throws Exception {
+        mvc.perform(asAdmin(post("/api/admin/users/" + ADMIN + "/status")).header("Authorization", "Bearer abc")
+                .contentType(MediaType.APPLICATION_JSON).content("{\"status\":\"SUSPENDED\"}")).andExpect(status().isConflict());
+        mvc.perform(asAdmin(post("/api/admin/users/" + ADMIN + "/delete")).header("Authorization", "Bearer abc")
+                .contentType(MediaType.APPLICATION_JSON).content("{\"immediate\":true}")).andExpect(status().isConflict());
+        mvc.perform(asAdmin(post("/api/admin/users/" + ADMIN + "/plan")).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"plan\":\"PREMIUM\",\"interval\":\"YEARLY\"}")).andExpect(status().isConflict());
+        assertThat(jdbc.queryForObject("select count(*) from audit_log where target = ? and outcome = 'DENIED'", Long.class, ADMIN))
+                .isEqualTo(3L);
+    }
+
+    @Test
+    void deletingAnAccountGoesToUserServiceAndIsAudited() throws Exception {
+        UUID user = UUID.randomUUID();
+        String body = mvc.perform(asAdmin(post("/api/admin/users/" + user + "/delete")).header("Authorization", "Bearer abc")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"immediate\":true}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("REQUESTED"))
+                .andReturn().getResponse().getContentAsString();
+        assertThat(body).doesNotContain("userId");
+        assertThat(jdbc.queryForObject("select count(*) from audit_log where action = 'ACCOUNT_DELETE_NOW' and target = ? "
+                + "and outcome = 'SUCCESS'", Long.class, user.toString())).isEqualTo(1L);
+    }
+
+    @Test
+    void planChangesGoToBillingValidateTheirInputAndAreAudited() throws Exception {
+        UUID user = UUID.randomUUID();
+        // the stub answers 409 for every membership action (as billing does for "already Premium" / "no subscription")
+        mvc.perform(asAdmin(post("/api/admin/users/" + user + "/plan")).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"plan\":\"PREMIUM\",\"interval\":\"YEARLY\"}")).andExpect(status().isConflict());
+        mvc.perform(asAdmin(post("/api/admin/users/" + user + "/plan")).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"plan\":\"FREE\"}")).andExpect(status().isConflict());
+        mvc.perform(asAdmin(post("/api/admin/users/" + user + "/plan")).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"plan\":\"PREMIUM\",\"interval\":\"FOREVER\"}")).andExpect(status().isBadRequest());
+        mvc.perform(asAdmin(post("/api/admin/users/" + user + "/plan")).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"plan\":\"GOLD\"}")).andExpect(status().isBadRequest());
+        assertThat(jdbc.queryForObject("select count(*) from audit_log where target = ? and action in "
+                + "('PLAN_GRANT_PREMIUM', 'PLAN_SET_FREE') and outcome = 'DENIED'", Long.class, user.toString())).isEqualTo(2L);
+    }
+
+    @Test
+    void endingASubscriptionThatDoesNotExistIsAConflict() throws Exception {
+        UUID user = UUID.randomUUID();
+        mvc.perform(asAdmin(post("/api/admin/users/" + user + "/subscription/end")).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"mode\":\"NOW\"}")).andExpect(status().isConflict());
+        mvc.perform(asAdmin(post("/api/admin/users/" + user + "/subscription/end")).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"mode\":\"REFUND\"}")).andExpect(status().isBadRequest());
+        assertThat(jdbc.queryForObject("select count(*) from audit_log where action = 'SUBSCRIPTION_END_NOW' and target = ? "
+                + "and outcome = 'DENIED'", Long.class, user.toString())).isEqualTo(1L);
     }
 
     // ---- flags and broadcasts ----
@@ -233,9 +353,21 @@ class AdminApiTest {
         mvc.perform(asAdmin(post("/api/admin/broadcasts")).contentType(MediaType.APPLICATION_JSON)
                 .content("{\"title\":\"\",\"body\":\"x\",\"audience\":\"All users\",\"channel\":\"PUSH\"}"))
                 .andExpect(status().isBadRequest());
+        // e-mail is not a channel
+        mvc.perform(asAdmin(post("/api/admin/broadcasts")).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"title\":\"Hi\",\"body\":\"x\",\"audience\":\"All users\",\"channel\":\"EMAIL\"}"))
+                .andExpect(status().isBadRequest());
     }
 
     // ---- system ----
+
+    @Test
+    void flagsSayWhichServiceEnforcesThemAndAreReadableInternally() throws Exception {
+        mvc.perform(asAdmin(get("/api/admin/feature-flags"))).andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.key=='sms-import')].enforcedBy").value("billing-service"));
+        mvc.perform(get("/internal/flags")).andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].key").exists()).andExpect(jsonPath("$[0].summary").doesNotExist());
+    }
 
     @Test
     void healthShowsWhichServicesAnswer() throws Exception {

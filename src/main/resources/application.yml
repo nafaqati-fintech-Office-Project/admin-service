@@ -44,7 +44,12 @@ admin:
     billing-service-url: ${BILLING_SERVICE_URL:http://127.0.0.1:8093}
     family-service-url: ${FAMILY_SERVICE_URL:http://127.0.0.1:8086}
     transaction-service-url: ${TRANSACTIONS_SERVICE_URL:http://127.0.0.1:8083}
+    # auth-service is called with the signed-in admin's own JWT (it checks ROLE_ADMIN itself); notification-service delivers broadcasts
+    auth-service-url: ${AUTH_SERVICE_URL:http://127.0.0.1:8081}
+    notification-service-url: ${NOTIFICATION_SERVICE_URL:http://127.0.0.1:8084}
     timeout: ${ADMIN_DOWNSTREAM_TIMEOUT:2s}
+  # Kafka, read-only: consumer group offsets for the System page's lag table
+  kafka-bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
   # name=base-url pairs probed at <base-url>/actuator/health by the System page.
   health-targets: >-
     api-gateway=http://127.0.0.1:8080,

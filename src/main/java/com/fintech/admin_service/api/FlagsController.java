@@ -18,7 +18,10 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-/** The flag registry. Changing a flag is audited. Services do not read these values yet (see GET /capabilities). */
+/**
+ * The flag registry. Changing a flag is audited. enforcedBy names the service that reads a flag (GET /internal/flags, within 30
+ * seconds); null means no service reads it yet, so switching it changes nothing in the apps.
+ */
 @RestController
 @RequestMapping("/api/admin/feature-flags")
 public class FlagsController {
@@ -27,6 +30,9 @@ public class FlagsController {
 
     public record FlagUpdate(@NotNull Boolean enabled) {
     }
+
+    /** Which service reads which flag. family-premium-enforcement is a product decision that is not implemented yet. */
+    static final Map<String, String> ENFORCED_BY = Map.of("paymob-checkout", "billing-service", "sms-import", "billing-service");
 
     private final JdbcTemplate jdbc;
     private final AuditService audit;
@@ -39,8 +45,14 @@ public class FlagsController {
     @GetMapping
     public List<Map<String, Object>> list() {
         return jdbc.query("select key, summary, enabled from feature_flags order by key",
-                (rs, i) -> Map.<String, Object>of("key", rs.getString("key"), "summary", rs.getString("summary"),
-                        "enabled", rs.getBoolean("enabled")));
+                (rs, i) -> {
+                    Map<String, Object> m = new java.util.LinkedHashMap<>();
+                    m.put("key", rs.getString("key"));
+                    m.put("summary", rs.getString("summary"));
+                    m.put("enabled", rs.getBoolean("enabled"));
+                    m.put("enforcedBy", ENFORCED_BY.get(rs.getString("key")));
+                    return m;
+                });
     }
 
     @PostMapping("/{key}")
