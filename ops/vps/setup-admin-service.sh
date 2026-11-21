@@ -131,8 +131,16 @@ fi
 say "api-gateway: ADMIN_SERVICE_URI"
 GATEWAY="$(block api-gateway)"
 [ -n "$GATEWAY" ] || { echo "api-gateway is not in compose.apps.yaml"; false; }
-if printf '%s\n' "$GATEWAY" | grep -q 'ADMIN_SERVICE_URI'; then
-  echo "already set: $(printf '%s\n' "$GATEWAY" | grep 'ADMIN_SERVICE_URI' | xargs)"
+if printf '%s\n' "$GATEWAY" | grep -qE 'ADMIN_SERVICE_URI:[[:space:]]*http://admin-service:8088[[:space:]]*$'; then
+  echo "already set to http://admin-service:8088"
+elif printf '%s\n' "$GATEWAY" | grep -q 'ADMIN_SERVICE_URI'; then
+  # an older value (for example port 8087) would send every admin request nowhere: correct it inside the gateway block only
+  echo "correcting: $(printf '%s\n' "$GATEWAY" | grep 'ADMIN_SERVICE_URI' | xargs)"
+  awk '$0=="  api-gateway:"{g=1} g && /^  [a-zA-Z0-9_-]+:[[:space:]]*$/ && $0!="  api-gateway:"{g=0}
+       g && /^[[:space:]]+ADMIN_SERVICE_URI:/ {sub(/ADMIN_SERVICE_URI:.*/, "ADMIN_SERVICE_URI: http://admin-service:8088")} {print}' \
+    "$APPS" > "$APPS.tmp" && mv "$APPS.tmp" "$APPS"
+  grep -q 'ADMIN_SERVICE_URI: http://admin-service:8088' "$APPS" || { echo "could not correct ADMIN_SERVICE_URI"; false; }
+  echo "now: ADMIN_SERVICE_URI: http://admin-service:8088"
 else
   # add right below "environment:" inside the api-gateway block only
   awk '$0=="  api-gateway:"{g=1} g && /^  [a-zA-Z0-9_-]+:[[:space:]]*$/ && $0!="  api-gateway:"{g=0}
