@@ -31,12 +31,18 @@ public class OverviewService {
 
     /** {@code authorization}: the admin's bearer token, needed for auth-service's activity counts (null skips them). */
     public Map<String, Object> overview(String authorization) {
-        Map<String, Object> userStats = attempt("user-service", downstream::userStats);
-        Map<String, Object> logins = authorization == null ? null
-                : attempt("auth-service", () -> downstream.loginActivity(authorization));
-        Map<String, Object> billing = attempt("billing-service", downstream::billingStats);
-        Map<String, Object> family = attempt("family-service", downstream::familyStats);
-        Map<String, Object> activity = attempt("transaction-service", downstream::transactionStats);
+        // The five sources are asked at the same time: the page waits for the slowest one, not for all of them in a row.
+        var userStatsF = Parallel.start(() -> attempt("user-service", downstream::userStats));
+        var loginsF = Parallel.start(() -> authorization == null ? null
+                : attempt("auth-service", () -> downstream.loginActivity(authorization)));
+        var billingF = Parallel.start(() -> attempt("billing-service", downstream::billingStats));
+        var familyF = Parallel.start(() -> attempt("family-service", downstream::familyStats));
+        var activityF = Parallel.start(() -> attempt("transaction-service", downstream::transactionStats));
+        Map<String, Object> userStats = userStatsF.join();
+        Map<String, Object> logins = loginsF.join();
+        Map<String, Object> billing = billingF.join();
+        Map<String, Object> family = familyF.join();
+        Map<String, Object> activity = activityF.join();
 
         Long users = number(userStats, "total");
         Long premium = number(billing, "activeSubscriptions");

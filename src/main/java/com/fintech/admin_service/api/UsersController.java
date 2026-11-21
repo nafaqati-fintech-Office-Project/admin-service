@@ -75,10 +75,14 @@ public class UsersController {
                 "id", "status", "createdAt");
         List<String> ids = items.stream().map(i -> String.valueOf(i.get("id"))).toList();
 
-        Map<String, Map<String, Object>> authById = byId(ids.isEmpty() ? List.of()
-                : attempt("auth-service", () -> downstream.authLookup(ids, request.getHeader(HttpHeaders.AUTHORIZATION))));
-        Map<String, Map<String, Object>> billingById = byId(ids.isEmpty() ? List.of()
+        // auth-service and billing-service are asked at the same time
+        String bearer = request.getHeader(HttpHeaders.AUTHORIZATION);
+        var authF = com.fintech.admin_service.service.Parallel.start(() -> ids.isEmpty() ? List.<Map<String, Object>>of()
+                : attempt("auth-service", () -> downstream.authLookup(ids, bearer)));
+        var billingF = com.fintech.admin_service.service.Parallel.start(() -> ids.isEmpty() ? List.<Map<String, Object>>of()
                 : attempt("billing-service", () -> downstream.billingLookup(ids)));
+        Map<String, Map<String, Object>> authById = byId(authF.join());
+        Map<String, Map<String, Object>> billingById = byId(billingF.join());
 
         List<Map<String, Object>> rows = new ArrayList<>();
         for (Map<String, Object> item : items) {
