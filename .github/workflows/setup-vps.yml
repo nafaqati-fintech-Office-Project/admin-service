@@ -13,7 +13,7 @@ on:
       mode:
         description: inspect, setup or make-admin
         type: choice
-        options: [inspect, setup, make-admin]
+        options: [inspect, setup, make-admin, diagnose]
         default: inspect
       panel_origin:
         description: The admin panel's address (https://..., no trailing slash)
@@ -114,7 +114,26 @@ jobs:
           echo "api-gateway did not report Started in 180 s:"; docker logs --tail 40 fintech-api-gateway-1; exit 1
           REMOTE
 
-      - name: Give the ADMIN role
+      - name: Diagnose speed (read only)
+        if: inputs.mode == 'diagnose'
+        run: |
+          ssh "$VPS" bash -s <<'REMOTE'
+          set -u
+          echo "== swapping? (si/so = pages swapped in/out per second; anything above 0 means the server is short of memory)"
+          vmstat 1 6
+          echo "== per container"
+          docker stats --no-stream --format '{{.Name}}  cpu {{.CPUPerc}}  mem {{.MemUsage}}' | sort
+          NET=$(docker inspect fintech-admin-service-1 -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' | awk '{print $1}')
+          echo "== admin endpoints, timed inside the server (network $NET; read-only GETs as a test admin id)"
+          ID=00000000-0000-4000-8000-0000000000ad
+          for p in capabilities stats/overview stats/billing 'users?page=0&size=25' email-change-requests deletion-requests system/health system/kafka feature-flags broadcasts audit; do
+            docker run --rm --network "$NET" curlimages/curl:8.11.1 -s -o /dev/null -m 30 \
+              -H "X-User-Id: $ID" -H "X-User-Roles: ADMIN" \
+              -w "%{time_total}s  %{http_code}  /api/admin/$p\n" "http://admin-service:8088/api/admin/$p"
+          done
+          echo "== admin-service warnings (last 30 min)"
+          docker logs --since 30m fintech-admin-service-1 2>&1 | grep -E "WARN|ERROR" | cut -c1-220 | tail -15
+          REMOTE
         if: inputs.mode == 'make-admin'
         env:
           ADMIN_USER: ${{ inputs.admin_username }}
