@@ -49,6 +49,10 @@ jobs:
           import os, re, textwrap
           raw = os.environ["VPS_SSH_KEY"].replace("\r", "")
           m = re.search(r"-----BEGIN ([A-Z ]+)-----(.*?)-----END \1-----", raw, re.S)
+          if not m and re.sub(r"\s+", "", raw).startswith("b3BlbnNzaC1rZXktdjE"):
+              # only the base64 body was copied (the BEGIN/END lines were left out): it is an OpenSSH key, put them back
+              raw = "-----BEGIN OPENSSH PRIVATE KEY-----\n" + raw.strip() + "\n-----END OPENSSH PRIVATE KEY-----"
+              m = re.search(r"-----BEGIN ([A-Z ]+)-----(.*?)-----END \1-----", raw, re.S)
           if not m:
               first = raw.strip().split()[0] if raw.strip() else "(empty)"
               kind = "a PUBLIC key (.pub)" if first.startswith("ssh-") else "a PuTTY .ppk key" if "PuTTY" in raw else f"something else (starts with {first[:12]!r})"
