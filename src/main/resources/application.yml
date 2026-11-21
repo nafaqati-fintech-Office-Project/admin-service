@@ -50,8 +50,10 @@ admin:
     timeout: ${ADMIN_DOWNSTREAM_TIMEOUT:2s}
   # Kafka, read-only: consumer group offsets for the System page's lag table
   kafka-bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
-  # name=base-url pairs probed at <base-url>/actuator/health by the System page.
-  health-targets: >-
+  # name=base-url pairs probed at <base-url>/actuator/health by the System page. On a server set ADMIN_HEALTH_TARGETS
+  # (container names); the default below is the local stack.
+  health-targets: ${ADMIN_HEALTH_TARGETS:${admin.local-health-targets}}
+  local-health-targets: >-
     api-gateway=http://127.0.0.1:8080,
     auth-service=http://127.0.0.1:8081,
     user-service=http://127.0.0.1:8082,
