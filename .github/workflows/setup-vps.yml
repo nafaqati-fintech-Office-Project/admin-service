@@ -43,8 +43,10 @@ jobs:
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
         run: |
           install -m 700 -d ~/.ssh
-          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_ed25519
+          # A key pasted or piped from Windows can carry CRLF line ends, which OpenSSH rejects ("error in libcrypto").
+          printf '%s\n' "$VPS_SSH_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
+          ssh-keygen -y -f ~/.ssh/id_ed25519 > /dev/null || { echo "VPS_SSH_KEY is not a readable private key (wrong file, or protected by a passphrase)"; exit 1; }
           for i in 1 2 3 4 5; do ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null && break; sleep 5; done
           test -s ~/.ssh/known_hosts
 
